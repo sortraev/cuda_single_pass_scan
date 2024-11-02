@@ -5,10 +5,11 @@
 
 #define CUDASSERT(code) { __cudassert((code), __FILE__, __LINE__); }
 #define CUDACHECK(code) { __cudassert((code), __FILE__, __LINE__, false); }
-void __cudassert(cudaError_t code,
-                 const char *file,
-                 int line,
-                 bool do_abort_on_err = true) {
+
+cudaError_t __cudassert(cudaError_t code,
+                        const char *file,
+                        int line,
+                        bool do_abort_on_err = true) {
   if (code != cudaSuccess) {
     std::cerr
       << "GPU Error in "
@@ -21,4 +22,5 @@ void __cudassert(cudaError_t code,
     if (do_abort_on_err)
         exit(1);
   }
+  return code;
 }
