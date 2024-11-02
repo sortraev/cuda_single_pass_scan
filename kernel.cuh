@@ -3,19 +3,20 @@
 
 #include "extras.cuh"
 
+#define NUM_BLOCKS_PER_MP 4
 
 // TODO: document the rest of the steps in the kernel.
 template <class OP, int32_t B, uint8_t Q>
 __global__ void
-__launch_bounds__(B)
+__launch_bounds__(B, NUM_BLOCKS_PER_MP) // TODO
 scan_kernel(
     typename OP::ElTp *g_in,
     typename OP::ElTp *g_out,
     int32_t N,
-    volatile char *g_flags,
+    volatile flag_t *g_flags,
     volatile typename OP::ElTp *g_aggregates,
     volatile typename OP::ElTp *g_prefixes,
-    int32_t *g_dynid_counter = NULL
+    uint32_t *g_dynid_counter = NULL
 ) {
 
   typedef typename OP::ElTp ElTp;
@@ -25,14 +26,25 @@ scan_kernel(
   static_assert(Q > 0, "Q must be positive");
 
   extern __shared__ char smem_ext[];
+
+  uint32_t *s_dynid_counter = (uint32_t*) smem_ext;
   ElTp *s_xs = (ElTp*) smem_ext;
 
-  ElTp *s_lookback_v = (ElTp*) smem_ext;
-  char  *s_lookback_f = (char*)  (smem_ext + WARPSIZE * sizeof(ElTp));
+  ElTp   *s_lookback_v = (ElTp*) smem_ext;
+  flag_t *s_lookback_f = (flag_t*) (s_lookback_v + WARPSIZE);
 
   ElTp r_chunk[Q];
 
-  const int dyn_blockIdx = blockIdx.x; // TODO: dynamic block indexing!
+  if (threadIdx.x == 0) {
+    uint32_t tmp = atomicAdd(g_dynid_counter, 1);
+    *s_dynid_counter = tmp;
+    // TODO: only works as long as num physical tblocks equals num virt tblocks.
+    if (tmp == gridDim.x - 1)
+      g_dynid_counter = 0;
+  }
+  __syncthreads();
+
+  const int dyn_blockIdx = *s_dynid_counter; // TODO: dynamic block indexing!
   const int tblock_offset = dyn_blockIdx * B * Q;
 
   /* 
@@ -85,18 +97,18 @@ scan_kernel(
     if (do_lookback) {
       // first WARPSIZE threads perform the lookback.
       if (threadIdx.x < WARPSIZE) {
-        int32_t lookback_idx = dyn_blockIdx + threadIdx.x;
+        int32_t lookback_idx = dyn_blockIdx + threadIdx.x - WARPSIZE;
         while (1) {
-          lookback_idx -= WARPSIZE;
+          // spin as long as any flag is X.
+          // uint32_t idx_last_X = __ffs(__ballot_sync(SHFL_MASK, f == flag_X));
+          flag_t f = lookback_idx >= 0 ? g_flags[lookback_idx] : flag_P;
+          if (__any_sync(SHFL_MASK, f == flag_X))
+            continue;
 
-          // spin until no flag read is X.
-          char f;
-          do {
-            f = lookback_idx >= 0 ? g_flags[lookback_idx] : flag_P;
-          } while (__any_sync(SHFL_MASK, f == flag_X));
+          // flag_t f = lookback_idx >= 0 ? g_flags[lookback_idx] : flag_P;
 
-          // then, scan a chunk of aggregates and prefixes!
-          ElTp v = lookback_idx >= 0
+          // then, scan the chunk of aggregates and prefixes!
+          ElTp v = lookback_idx >= 0 // && threadIdx.x > idx_last_X ?
                   ? (f == flag_P ? g_prefixes : g_aggregates)[lookback_idx]
                   : OP::ne();
           s_lookback_f[threadIdx.x] = f;
@@ -106,11 +118,12 @@ scan_kernel(
           block_exc_prefix = OP::apply(res.v, block_exc_prefix);
           if (res.f == flag_P)
             break;
+          lookback_idx -= WARPSIZE;
         }
       }
 
       // broadcast the computed block_exc_prefix to the other warps.
-      if (threadIdx.x == 0)
+      if (threadIdx.x == WARPSIZE - 1)
         s_xs[0] = block_exc_prefix;
       __syncthreads();
       block_exc_prefix = s_xs[0];

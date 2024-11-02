@@ -4,10 +4,12 @@
 #define WARPSIZE 32
 #define SHFL_MASK 0xffffffff
 
+
+typedef char flag_t;
 enum {
-  flag_A = 0,  // 00
-  flag_P = 1,  // 01
-  flag_X = 2   // 11
+  flag_A = (flag_t) 0,  // 00
+  flag_P = (flag_t) 1,  // 01
+  flag_X = (flag_t) 2   // 11
 };
 
 template <int32_t B = -1>
@@ -86,7 +88,6 @@ class FV_pair {
   public:
     char f;
     T v;
-
     __device__ __host__ inline FV_pair() { f = flag_P; }
     __device__ __host__ inline FV_pair(char f, T v) { f = f; v = v;}
 };
@@ -94,18 +95,21 @@ class FV_pair {
 template <class OP>
 __device__
 FV_pair<typename OP::ElTp> warpreduce_FV_smem(char *s_f, typename OP::ElTp *s_v) {
-  const int32_t i    = threadIdx.x;
-  const uint8_t lane = i & 31;
+  const int32_t tid  = threadIdx.x;
+  const uint8_t lane = tid & 31;
+
+  // char flag = s_f[tid];
+  // typename OP::ElTp acc = s_v[tid];
 
   #pragma unroll
-  for (int i = 0; i < 5; i++) {
-    int p = 1 << i;
+  for (int p = 1; p < 32; p <<= 1) {
     if (lane >= p) {
-      if (s_f[i] != flag_A)
-        s_v[i] = OP::apply(s_v[i - p], s_v[i]);
-      s_f[i] |= s_f[i - p];
+      if (s_f[tid] != flag_A)
+        s_v[tid] = OP::apply(s_v[tid - p], s_v[tid]);
+      s_f[tid] |= s_f[tid - p];
     }
   }
+  // return FV_pair(flag, acc);
   return FV_pair(s_f[31], s_v[31]);
 }
 
