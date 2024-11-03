@@ -1,39 +1,37 @@
 #pragma once
 #include <cstdint>
+#include <cstdio>
 
 #include "extras.cuh"
-
-#define NUM_BLOCKS_PER_MP 4
 
 // TODO: document the rest of the steps in the kernel.
 template <class OP, int32_t B, uint8_t Q>
 __global__ void
-__launch_bounds__(B, NUM_BLOCKS_PER_MP) // TODO
+__launch_bounds__(B) // TODO
 scan_kernel(
-    typename OP::ElTp *g_in,
-    typename OP::ElTp *g_out,
+    volatile typename OP::ElTp *g_in,
+    volatile typename OP::ElTp *g_out,
     int32_t N,
     volatile flag_t *g_flags,
     volatile typename OP::ElTp *g_aggregates,
     volatile typename OP::ElTp *g_prefixes,
-    uint32_t *g_dynid_counter = NULL
+    uint32_t *g_dynid_counter
 ) {
-
-  typedef typename OP::ElTp ElTp;
-
   static_assert(B >= WARPSIZE && B <= 1024 && B % WARPSIZE == 0,
                 "B must be a multiple of WARPSIZE between WARPSIZE and 1024");
   static_assert(Q > 0, "Q must be positive");
 
+  typedef typename OP::ElTp ElTp;
+
   extern __shared__ char smem_ext[];
 
-  uint32_t *s_dynid_counter = (uint32_t*) smem_ext;
-  ElTp *s_xs = (ElTp*) smem_ext;
-
-  ElTp   *s_lookback_v = (ElTp*) smem_ext;
-  flag_t *s_lookback_f = (flag_t*) (s_lookback_v + WARPSIZE);
+  uint32_t      *s_dynid_counter    = (uint32_t*) smem_ext;
+  volatile ElTp *s_copy_buf         = (volatile ElTp*) smem_ext;
+  volatile ElTp *s_blockscan_buf    = (volatile ElTp*) smem_ext;
+  volatile ElTp *s_block_exc_prefix = (volatile ElTp*) smem_ext;
 
   ElTp r_chunk[Q];
+  // volatile ElTp *r_chunk = s_copy_buf + threadIdx.x * Q;
 
   if (threadIdx.x == 0) {
     uint32_t tmp = atomicAdd(g_dynid_counter, 1);
@@ -42,33 +40,35 @@ scan_kernel(
     if (tmp == gridDim.x - 1)
       g_dynid_counter = 0;
   }
+
+  __syncthreads();
+  const int dyn_blockIdx = *s_dynid_counter; // TODO: dynamic block indexing!
   __syncthreads();
 
-  const int dyn_blockIdx = *s_dynid_counter; // TODO: dynamic block indexing!
   const int tblock_offset = dyn_blockIdx * B * Q;
 
   /* 
    * 1) each thread copies and scans a Q-sized chunk, placing the per-thread
    *    results in smem.
    */
-  copy_gmem_to_smem<ElTp, B, Q>(g_in, s_xs, tblock_offset, N);
+  copy_gmem_to_smem<OP, B, Q>(g_in, s_copy_buf, tblock_offset, N);
   __syncthreads();
 
   ElTp acc = OP::ne();
   #pragma unroll
-  for (int i = 1; i < Q; i++)
-    r_chunk[i] = OP::apply(r_chunk[i - 1], s_xs[threadIdx.x * Q + i]);
+  for (int i = 0; i < Q; i++)
+    r_chunk[i] = acc = OP::apply(acc, s_copy_buf[threadIdx.x * Q + i]);
   __syncthreads();
 
   // store per-thread accumulators.
-  s_xs[threadIdx.x] = r_chunk[Q - 1];
-  __syncthreads();
+  s_blockscan_buf[threadIdx.x] = acc;
+
 
   /*
    * 2) scan per-thread accumulators. Note that `block_aggregate` is only
    *    actually a block aggregate for the last thread in each block.
    */
-  ElTp block_aggregate = blockscan_smem<OP, B>(s_xs);
+  ElTp block_aggregate = blockscan_smem<OP, B>(s_blockscan_buf);
 
   /*
    * 3) immediately publish aggregate/prefix!
@@ -81,55 +81,54 @@ scan_kernel(
   }
 
   __syncthreads();
-  s_xs[threadIdx.x] = block_aggregate;
+  s_blockscan_buf[threadIdx.x] = block_aggregate;
   __syncthreads();
 
   ElTp chunk_exc_prefix =
-    threadIdx.x > 0 ? s_xs[threadIdx.x - 1] : OP::ne();
+    threadIdx.x > 0 ? s_blockscan_buf[threadIdx.x - 1] : OP::ne();
 
   ElTp block_exc_prefix = OP::ne();
   if (dyn_blockIdx > 0) {
 
-    // TODO: is this method for lookback correct, or should only one thread read
-    // the flag and publish do_lookback to smem?
-    bool do_lookback = g_flags[dyn_blockIdx - 1] != flag_P;
-
-    if (do_lookback) {
-      // first WARPSIZE threads perform the lookback.
-      if (threadIdx.x < WARPSIZE) {
+    if (threadIdx.x < WARPSIZE) {
+      bool do_lookback = g_flags[dyn_blockIdx - 1] != flag_P;
+      if (do_lookback) {
+        // first WARPSIZE threads perform the lookback.
         int32_t lookback_idx = dyn_blockIdx + threadIdx.x - WARPSIZE;
         while (1) {
-          // spin as long as any flag is X.
-          // uint32_t idx_last_X = __ffs(__ballot_sync(SHFL_MASK, f == flag_X));
+
+          // load a flag and, if flag not X, an aggregate/prefix.
           flag_t f = lookback_idx >= 0 ? g_flags[lookback_idx] : flag_P;
-          if (__any_sync(SHFL_MASK, f == flag_X))
-            continue;
+          ElTp v = lookback_idx >= 0 && !flag_is_X(f)
+                 ? (flag_is_P(f) ? g_prefixes : g_aggregates)[lookback_idx]
+                 : OP::ne();
 
-          // flag_t f = lookback_idx >= 0 ? g_flags[lookback_idx] : flag_P;
+          // find number of valid lookback values; this is how much lookback
+          // window should be shifted back.
+          // use ballot_sync to find threads whose flag is X, then use clz
+          // to compute number of leading zeroes. if no flag is X, then
+          // shift_amt will be WARPSIZE (this is safe because, unlike in e.g.
+          // GNU, __clz(0) is defined in CUDA).
+          int shift_amt = __clz(__ballot_sync(SHFL_FULL_MASK, flag_is_X(f)));
+          lookback_idx -= shift_amt;
 
-          // then, scan the chunk of aggregates and prefixes!
-          ElTp v = lookback_idx >= 0 // && threadIdx.x > idx_last_X ?
-                  ? (f == flag_P ? g_prefixes : g_aggregates)[lookback_idx]
-                  : OP::ne();
-          s_lookback_f[threadIdx.x] = f;
-          s_lookback_v[threadIdx.x] = v;
-          FV_pair res = warpreduce_FV_smem<OP>(s_lookback_f, s_lookback_v);
+          warpreduce_FV_shfl<OP>(&f, &v);
 
-          block_exc_prefix = OP::apply(res.v, block_exc_prefix);
-          if (res.f == flag_P)
-            break;
-          lookback_idx -= WARPSIZE;
+          block_exc_prefix = OP::apply(v, block_exc_prefix);
+          if (flag_is_P(f)) break;
         }
       }
+      else {
+        block_exc_prefix = g_prefixes[dyn_blockIdx - 1];
+      }
 
-      // broadcast the computed block_exc_prefix to the other warps.
-      if (threadIdx.x == WARPSIZE - 1)
-        s_xs[0] = block_exc_prefix;
-      __syncthreads();
-      block_exc_prefix = s_xs[0];
+      // broadcast computed block_exc_prefix to the other warps.
+      // TODO: is it OK to have all threads in warp write to s_block_exc_prefix?
+      if (threadIdx.x == 0)
+        *s_block_exc_prefix = block_exc_prefix;
     }
-    else // we already have the prefix, so skip the lookback!
-      block_exc_prefix = g_prefixes[dyn_blockIdx - 1];
+    __syncthreads();
+    block_exc_prefix = *s_block_exc_prefix;
 
     if (threadIdx.x == B - 1) {
       g_prefixes[dyn_blockIdx] = OP::apply(block_exc_prefix, block_aggregate);
@@ -137,15 +136,17 @@ scan_kernel(
       g_flags[dyn_blockIdx] = flag_P;
     }
   }
-  // TODO: do we need a sync here? are we missing some logic?
+
+  // TODO: this sync redundant if we keep s_block_exc_prefix separate from
+  // s_copy_buf.
+  __syncthreads();
 
   ElTp thread_exc_prefix = OP::apply(block_exc_prefix, chunk_exc_prefix);
-  __syncthreads();
 
   #pragma unroll
   for (int i = 0; i < Q; i++)
-    s_xs[threadIdx.x * Q + i] = OP::apply(thread_exc_prefix, r_chunk[i]);
+    s_copy_buf[threadIdx.x * Q + i] = OP::apply(thread_exc_prefix, r_chunk[i]);
 
   __syncthreads();
-  copy_gmem_to_smem<ElTp, B, Q>(g_out, s_xs, tblock_offset, N);
+  copy_smem_to_gmem<OP, B, Q>(g_out, s_copy_buf, tblock_offset, N);
 }

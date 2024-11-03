@@ -12,6 +12,7 @@ int __device_scan(typename OP::ElTp *g_in, typename OP::ElTp *g_out, size_t N) {
   uint32_t *g_dynid_counter;
 
   size_t num_tblocks = CEIL_DIV(N, B * Q);
+
   CUDASSERT(cudaMalloc(&g_aggregates,    num_tblocks * sizeof(ElTp)));
   CUDASSERT(cudaMalloc(&g_prefixes,      num_tblocks * sizeof(ElTp)));
   CUDASSERT(cudaMalloc(&g_flags,         num_tblocks * sizeof(flag_t)));
@@ -22,12 +23,20 @@ int __device_scan(typename OP::ElTp *g_in, typename OP::ElTp *g_out, size_t N) {
 
   CUDASSERT(cudaPeekAtLastError());
 
-  // TODO: this.
-  constexpr int smem_size = std::max({
-      B * Q * sizeof(ElTp), // scan buffer
-      sizeof(uint32_t),     // dynamic tblock id
-      WARPSIZE * sizeof(ElTp) + WARPSIZE * sizeof(flag_t), // s_lookback
-  });
+  constexpr int smem_size =
+    std::max({
+        // dynamic tblock id
+        sizeof(uint32_t),
+        // for copying chunks
+        B * Q * sizeof(ElTp),
+        // for the warp reduction during lookback
+        WARPSIZE * sizeof(ElTp) + WARPSIZE * sizeof(flag_t),
+    });
+
+  std::cout
+    << "smem_size: "
+    << smem_size
+    << std::endl;
 
   scan_kernel
     <OP, B, Q>
@@ -50,15 +59,16 @@ int __device_scan(typename OP::ElTp *g_in, typename OP::ElTp *g_out, size_t N) {
   return 0;
 }
 
-
-template <class OP, int B = 256, int Q = 9>
+template <class OP, int B = 256, int Q = 25>
 int device_scan(typename OP::ElTp *h_in, typename OP::ElTp *h_out, size_t N) {
   typedef typename OP::ElTp ElTp;
 
   ElTp *g_in, *g_out;
   cudaMalloc(&g_in,  N * sizeof(ElTp));
   cudaMalloc(&g_out, N * sizeof(ElTp));
-  cudaMemcpy(h_in, g_in, N * sizeof(ElTp), cudaMemcpyHostToDevice);
+  cudaMemcpy(g_in, h_in, N * sizeof(ElTp), cudaMemcpyHostToDevice);
+
+  CUDASSERT(cudaPeekAtLastError());
 
   __device_scan<OP, B, Q>(g_in, g_out, N);
   cudaMemcpy(h_out, g_out, N * sizeof(ElTp), cudaMemcpyDeviceToHost);
