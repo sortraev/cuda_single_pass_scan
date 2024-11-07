@@ -4,6 +4,21 @@
 
 #include "extras.cuh"
 
+template<typename ElTp, int B, int Q>
+constexpr int get_smem_size() {
+  return
+    std::max({
+        // s_dynid_counter (dynamic id counter broadcasting)
+        sizeof(uint32_t),
+        // s_copy_buf (for copying chunks from gmem to rmem)
+        B * Q * sizeof(ElTp),
+        // s_blockscan_buf (for block-wide scans)
+        B * sizeof(ElTp),
+        // s_block_exc_prefix (this block's exclusive prefix)
+        sizeof(ElTp),
+    });
+}
+
 // TODO: document the rest of the steps in the kernel.
 template <class OP, int32_t B, uint8_t Q>
 __global__ void

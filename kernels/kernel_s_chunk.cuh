@@ -4,6 +4,24 @@
 
 #include "extras.cuh"
 
+template<typename ElTp, int B, int Q>
+constexpr int get_smem_size() {
+  return
+    std::max({
+        // s_dynid_counter (dynamic id counter broadcasting)
+        sizeof(uint32_t),
+        // s_chunks (for copying and holding thread chunks)
+        B * Q * sizeof(ElTp),
+    })
+    +
+    std::max({
+    // s_blockscan_buf (for block-wide scans)
+    B * sizeof(ElTp),
+    // s_block_exc_prefix (this block's exclusive prefix)
+    sizeof(ElTp),
+    });
+}
+
 // TODO: document the rest of the steps in the kernel.
 template <class OP, int32_t B, uint8_t Q>
 __global__ void
@@ -151,3 +169,4 @@ scan_kernel(
   __syncthreads();
   copy_smem_to_gmem<OP, B, Q>(g_out, s_chunks, tblock_offset, N);
 }
+

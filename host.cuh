@@ -6,7 +6,7 @@
 template <class OP, int B = 256, int Q = 25>
 void __device_scan_prealloc(typename OP::ElTp *g_in,
                             typename OP::ElTp *g_out,
-                            size_t N,
+                            uint64_t N,
                             flag_t *g_flags,
                             typename OP::ElTp *g_aggregates,
                             typename OP::ElTp *g_prefixes,
@@ -18,7 +18,7 @@ void __device_scan_prealloc(typename OP::ElTp *g_in,
 
   typedef typename OP::ElTp ElTp;
 
-  const size_t num_tblocks = CEIL_DIV(N, B * Q);
+  const uint64_t num_tblocks = CEIL_DIV(N, B * Q);
 
   CUDASSERT(cudaMemset(g_flags,         flag_X, num_tblocks * sizeof(flag_t)));
   CUDASSERT(cudaMemset(g_dynid_counter, 0,      1 * sizeof(uint32_t)));
@@ -47,7 +47,7 @@ void __device_scan_prealloc(typename OP::ElTp *g_in,
 template <class OP, int B = 256, int Q = 25>
 void __device_scan(typename OP::ElTp *g_in,
                    typename OP::ElTp *g_out,
-                   size_t N) {
+                   uint64_t N) {
   /*
    * device scan of g_in.
    * manages everything to do with temporary device arrays needed by the single
@@ -60,7 +60,7 @@ void __device_scan(typename OP::ElTp *g_in,
   flag_t *g_flags;
   uint32_t *g_dynid_counter;
 
-  size_t num_tblocks = CEIL_DIV(N, B * Q);
+  uint64_t num_tblocks = CEIL_DIV(N, B * Q);
 
   CUDASSERT(cudaMalloc(&g_aggregates,    num_tblocks * sizeof(ElTp)));
   CUDASSERT(cudaMalloc(&g_prefixes,      num_tblocks * sizeof(ElTp)));
@@ -87,7 +87,7 @@ void __device_scan(typename OP::ElTp *g_in,
 template <class OP, int B = 256, int Q = 25>
 void device_scan(typename OP::ElTp *h_in,
                  typename OP::ElTp *h_out,
-                 size_t N) {
+                 uint64_t N) {
   /*
    * h_out = scan(h_in, OP::apply, OP::ne()).
    * h_out may alias h_in.

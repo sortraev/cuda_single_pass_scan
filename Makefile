@@ -14,3 +14,6 @@ compile: main
 
 main: $(src)
 	$(nvcc) $< -o $@
+
+clean:
+	rm -rf main

@@ -1,6 +1,5 @@
 #pragma once
 #include <cstdint>
-#include <tuple>
 
 #define WARPSIZE       (32)
 #define SHFL_FULL_MASK (0xffffffff)
@@ -29,13 +28,13 @@ template <class OP, int32_t B, uint8_t Q>
 __device__ void
 copy_gmem_to_smem(volatile typename OP::ElTp *g_xs,
                   volatile typename OP::ElTp *s_xs,
-                  size_t tblock_offset,
-                  size_t N
+                  uint64_t tblock_offset,
+                  uint64_t N
                  ) {
   #pragma unroll
   for (int i = 0; i < Q; i++) {
-    size_t loc_ind = i * B + threadIdx.x;
-    size_t glb_ind = tblock_offset + loc_ind;
+    uint64_t loc_ind = i * B + threadIdx.x;
+    uint64_t glb_ind = tblock_offset + loc_ind;
     s_xs[loc_ind] = glb_ind < N ? g_xs[glb_ind] : OP::ne();
   }
 }
@@ -44,13 +43,13 @@ template <typename OP, int32_t B, uint8_t Q>
 __device__ void
 copy_smem_to_gmem(volatile typename OP::ElTp *g_xs,
                   volatile typename OP::ElTp *s_xs,
-                  size_t tblock_offset,
-                  size_t N
+                  uint64_t tblock_offset,
+                  uint64_t N
                  ) {
   #pragma unroll
   for (int i = 0; i < Q; i++) {
-    size_t loc_ind = i * B + threadIdx.x;
-    size_t glb_ind = tblock_offset + loc_ind;
+    uint64_t loc_ind = i * B + threadIdx.x;
+    uint64_t glb_ind = tblock_offset + loc_ind;
     if (glb_ind < N)
       g_xs[glb_ind] = s_xs[loc_ind];
   }
@@ -208,5 +207,3 @@ public:
     return (ElTp) 0;
   }
 };
-
-
