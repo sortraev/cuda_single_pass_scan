@@ -1,4 +1,6 @@
-src=main.cu kernel.cuh extras.cuh
+kernel=kernels/kernel.cuh
+src=main.cu util.cuh host.cuh $(kernel) extras.cuh
+
 nvcc=nvcc -Xcompiler -Wall --std=c++17 --ptxas-options=-v 
 
 .PHONY: main

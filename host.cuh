@@ -1,9 +1,9 @@
 #include <algorithm>
 
 #include "util.cuh"
-#include "kernel.cuh"
+#include "kernels/kernel.cuh"
 
-template <class OP, int B = 256, int Q = 9>
+template <class OP, int B = 256, int Q = 25>
 int __device_scan(typename OP::ElTp *g_in, typename OP::ElTp *g_out, size_t N) {
   typedef typename OP::ElTp ElTp;
 

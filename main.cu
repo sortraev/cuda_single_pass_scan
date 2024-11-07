@@ -1,7 +1,7 @@
+#include <cstdlib> // std::rand
+
 #include "util.cuh"
 #include "host.cuh"
-
-#define GPU_RUNS 1
 
 typedef int ElTp;
 
@@ -12,6 +12,14 @@ void host_scan(typename OP::ElTp *h_in, typename OP::ElTp *h_out, size_t N) {
     h_out[i] = acc = OP::apply(acc, h_in[i]);
 }
 
+void init_array(int *xs, size_t N) {
+  for (size_t i = 0; i < N; i++)
+    xs[i] = i + 1;
+}
+void init_array(float *xs, size_t N) {
+  for (size_t i = 0; i < N; i++)
+    xs[i] = std::rand() / RAND_MAX;
+}
 
 int main(int argc, char **argv) {
 
@@ -23,7 +31,6 @@ int main(int argc, char **argv) {
 
   int N = atoi(argv[1]);
 
-
   ElTp *h_in  = (ElTp*) malloc(N * sizeof(ElTp));
   ElTp *h_out = (ElTp*) malloc(N * sizeof(ElTp));
   ElTp *h_device_res = (ElTp*) malloc(N * sizeof(ElTp));
@@ -32,8 +39,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  for (int i = 0; i < N; i++)
-    h_in[i] = (ElTp) i;
+  init_array(h_in, N);
 
   host_scan<Add<ElTp>>(h_in, h_out, N);
 

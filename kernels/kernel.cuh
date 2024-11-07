@@ -31,7 +31,6 @@ scan_kernel(
   volatile ElTp *s_block_exc_prefix = (volatile ElTp*) smem_ext;
 
   ElTp r_chunk[Q];
-  // volatile ElTp *r_chunk = s_copy_buf + threadIdx.x * Q;
 
   if (threadIdx.x == 0) {
     uint32_t tmp = atomicAdd(g_dynid_counter, 1);
@@ -47,7 +46,7 @@ scan_kernel(
 
   const int tblock_offset = dyn_blockIdx * B * Q;
 
-  /* 
+  /*
    * 1) each thread copies and scans a Q-sized chunk, placing the per-thread
    *    results in smem.
    */
