@@ -5,22 +5,6 @@
 
 typedef int ElTp;
 
-template <class OP>
-void host_scan(typename OP::ElTp *h_in, typename OP::ElTp *h_out, size_t N) {
-  typename OP::ElTp acc = OP::ne();
-  for (size_t i = 0; i < N; i++)
-    h_out[i] = acc = OP::apply(acc, h_in[i]);
-}
-
-void init_array(int *xs, size_t N) {
-  for (size_t i = 0; i < N; i++)
-    xs[i] = i + 1;
-}
-void init_array(float *xs, size_t N) {
-  for (size_t i = 0; i < N; i++)
-    xs[i] = std::rand() / RAND_MAX;
-}
-
 int main(int argc, char **argv) {
 
   // TODO:
